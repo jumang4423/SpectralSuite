@@ -1,111 +1,136 @@
-/*
-  ==============================================================================
-    MorphPluginParameters.cpp
-  ==============================================================================
-*/
-
 #include "MorphPluginParameters.h"
 #include "MorphInteractor.h"
 #include "../../shared/components/SplineHelper.h"
 
+const Identifier MorphPluginParameters::pointTree1Id("pointTree1");
+const Identifier MorphPluginParameters::pointTree2Id("pointTree2");
+
 MorphPluginParameters::MorphPluginParameters(AudioProcessor * processor) :
-    PluginParameters(processor),    
-    didSetInitialAudioState(false),
-    controlPointComponent(nullptr)
-{}
+PluginParameters(processor),
+m_didSetInitialAudioState(false),
+m_controlPointComponent1(nullptr),
+m_controlPointComponent2(nullptr),
+m_listener(nullptr)
+{
+    m_interpolation = m_vts.getRawParameterValue(INTERPOLATION_ID);
+
+    m_vts.addParameterListener(INTERPOLATION_ID, this);
+}
+
+AudioProcessorValueTreeState::ParameterLayout MorphPluginParameters::createParameterLayout()
+{
+    std::vector<std::unique_ptr<RangedAudioParameter>> params;
+
+    params.push_back(std::make_unique<AudioParameterFloat>(INTERPOLATION_ID, INTERPOLATION_NAME, 0.0f, 1.0f, 0.0f));
+    
+    return { params.begin(), params.end() };
+}
+
+
+void MorphPluginParameters::parameterChanged(const String &parameterID, float newValue)
+{
+    triggerControlPointsChanged();
+}
 
 void MorphPluginParameters::controlPointsChanged(Array<float> controlPoints, ControlPointComponent* component) {
-    
-    lastPoints = component->getSourcePoints();
-    this->lastPointsV2.setPointsAndScale(component->getSourcePoints(), component->getBounds().getBottom());
+    if (component == m_controlPointComponent1) {
+        m_controlPoints1.setPointsAndScale(component->getSourcePoints(), component->getBounds().getBottom());
+    } else if (component == m_controlPointComponent2) {
+        m_controlPoints2.setPointsAndScale(component->getSourcePoints(), component->getBounds().getBottom());
+    }
     
     auto newState = copyState();
     PluginParameters::replaceState(newState);
     
-    if(listener != nullptr) {
-        listener->controlPointsChanged(controlPoints);
+    if(m_listener != nullptr) {
+        m_listener->controlPointsChanged(m_controlPoints1, m_controlPoints2, m_interpolation->load());
     }
 }
 
 void MorphPluginParameters::replaceState(const ValueTree& newState) {
     PluginParameters::replaceState(newState);
     
-    bool paramsEmptyBeforePopulate = this->lastPointsV2.isEmpty();
+    bool paramsEmptyBeforePopulate = m_controlPoints1.isEmpty() && m_controlPoints2.isEmpty();
     
-    setPointsFromState(newState, this->lastPointsV2);
-    if(!lastPointsV2.points.isEmpty() && controlPointComponent != nullptr) {
-        controlPointComponent->setSourcePoints(lastPointsV2.points);
+    setPointsFromState(newState, m_controlPoints1, pointTree1Id);
+    if(!m_controlPoints1.points.isEmpty() && m_controlPointComponent1 != nullptr) {
+        m_controlPointComponent1->setSourcePoints(m_controlPoints1.points);
     }
     
-    // TODO: this is an ugly hack because we are using replaceState internally thus we are using it in 2 places. We only want the below to run when called externaly
-    bool paramsDidChange = paramsEmptyBeforePopulate && !this->lastPointsV2.isEmpty();
-    if(!didSetInitialAudioState || paramsDidChange) {
-        didSetInitialAudioState = true;
+    setPointsFromState(newState, m_controlPoints2, pointTree2Id);
+    if(!m_controlPoints2.points.isEmpty() && m_controlPointComponent2 != nullptr) {
+        m_controlPointComponent2->setSourcePoints(m_controlPoints2.points);
+    }
+
+    bool paramsDidChange = paramsEmptyBeforePopulate && (!m_controlPoints1.isEmpty() || !m_controlPoints2.isEmpty());
+    if(!m_didSetInitialAudioState || paramsDidChange) {
+        m_didSetInitialAudioState = true;
         this->triggerControlPointsChanged();
     }
 }
 
 void MorphPluginParameters::triggerControlPointsChanged() {
-    if(listener != nullptr && !lastPointsV2.points.isEmpty()) {
-        auto audioValues = SplineHelper::getAudioSplineValues(lastPointsV2.points, lastPointsV2.yScale);
-        listener->controlPointsChanged(audioValues);
+    if(m_listener != nullptr && !m_controlPoints1.points.isEmpty() && !m_controlPoints2.points.isEmpty()) {
+        m_listener->controlPointsChanged(m_controlPoints1, m_controlPoints2, m_interpolation->load());
     };
 }
 
 ValueTree MorphPluginParameters::copyState() {
     ValueTree tree = PluginParameters::copyState();
     
-    if (tree.getChildWithName("pointTree").isValid()) {
-        tree.removeChild(tree.getChildWithName("pointTree"), nullptr);
+    if (tree.getChildWithName(pointTree1Id).isValid()) {
+        tree.removeChild(tree.getChildWithName(pointTree1Id), nullptr);
     }
     
-    ValueTree pointTree("pointTree");
-    
-    auto points = lastPointsV2.points;
-    if(points.isEmpty()) {
-        return tree;
+    if (tree.getChildWithName(pointTree2Id).isValid()) {
+        tree.removeChild(tree.getChildWithName(pointTree2Id), nullptr);
     }
     
-    pointTree.setProperty("ylimit", lastPointsV2.yScale, nullptr);
-    
-    for(auto& point : points) {
-        ValueTree valuePoint ("point");
-        valuePoint.setProperty("x", point.x, nullptr);
-        valuePoint.setProperty("y", point.y, nullptr);
-        pointTree.appendChild(valuePoint, nullptr);
+    auto pointTree1 = SplineHelper::pointsToValueTree(m_controlPoints1, pointTree1Id);
+    if(pointTree1.isValid()) {
+        tree.addChild(pointTree1, -1, nullptr);
     }
     
-    tree.addChild(pointTree, -1, nullptr);
+    auto pointTree2 = SplineHelper::pointsToValueTree(m_controlPoints2, pointTree2Id);
+    if(pointTree2.isValid()) {
+        tree.addChild(pointTree2, -1, nullptr);
+    }
     
     return tree;
 }
 
-void MorphPluginParameters::setControlPointComponent(ControlPointComponent* component) {
-    component->setListener(this);
-    this->controlPointComponent = component;
-    this->setPointsFromState(getState(), this->lastPointsV2);
+void MorphPluginParameters::setControlPointComponents(ControlPointComponent* component1, ControlPointComponent* component2) {
+    component1->setListener(this);
+    m_controlPointComponent1 = component1;
+    setPointsFromState(getState(), m_controlPoints1, pointTree1Id);
+
+    if(!m_controlPoints1.points.isEmpty()) {
+        component1->setSourcePoints(m_controlPoints1.points);
+    }
+
+    component2->setListener(this);
+    m_controlPointComponent2 = component2;
+    setPointsFromState(getState(), m_controlPoints2, pointTree2Id);
     
-    if(!lastPointsV2.points.isEmpty()) {
-        component->setSourcePoints(lastPointsV2.points);
+    if(!m_controlPoints2.points.isEmpty()) {
+        component2->setSourcePoints(m_controlPoints2.points);
     }
 }
 
-void MorphPluginParameters::setPointsFromState(ValueTree state, ControlPoints &controlPoints) {
-    auto xmlStr = state.toXmlString();
-    if(!state.getChildWithName("pointTree").isValid()) {
+void MorphPluginParameters::setPointsFromState(const ValueTree& state, ControlPoints &controlPoints, const Identifier& pointTreeId) {
+    auto pointTree = state.getChildWithName(pointTreeId);
+    if(!pointTree.isValid()) {
         controlPoints.clear();
         return;
     }
-    
-    auto pointTree = state.getChildWithName("pointTree");
     
     int yLimit;
     if (pointTree.hasProperty("ylimit"))
     {
         yLimit = pointTree.getPropertyAsValue("ylimit", nullptr).getValue();
     }
-    else if(controlPointComponent != nullptr) {
-        yLimit = controlPointComponent->getLocalBounds().getBottom();
+    else if(m_controlPointComponent1 != nullptr) {
+        yLimit = m_controlPointComponent1->getLocalBounds().getBottom();
     }
     else {
         controlPoints.clear();
@@ -126,8 +151,4 @@ void MorphPluginParameters::setPointsFromState(ValueTree state, ControlPoints &c
     }
     
     controlPoints.setPointsAndScale(points, yLimit);
-}
-
-void MorphPluginParameters::setAudioMorphPointsOnState(Array<float> audioMorphPoints, ValueTree state) {
-    
 }

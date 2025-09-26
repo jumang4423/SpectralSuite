@@ -4,6 +4,11 @@
 #include "../../shared/components/ControlPointComponent.h"
 #include "ControlPoints.h"
 
+#include <atomic>
+
+#define INTERPOLATION_ID "interpolation"
+#define INTERPOLATION_NAME "Interpolation"
+
 class MorphInteractor;
 
 class MorphPluginParameters : public PluginParameters, public ControlPointComponent::Listener {
@@ -11,34 +16,36 @@ public:
     class Listener {
     public:
         virtual ~Listener() = default;
-        virtual void controlPointsChanged(Array<float> controlPoints) = 0;
+        virtual void controlPointsChanged(const ControlPoints& controlPoints1, const ControlPoints& controlPoints2, float interpolation) = 0;
     };
-        
-	MorphPluginParameters(AudioProcessor* processor);
+
+    MorphPluginParameters(AudioProcessor* processor);
+
+    static AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     
     void replaceState(const ValueTree& newState) override;
-    ValueTree copyState() override;    	
-		
+    ValueTree copyState() override;
+
     void setListener(Listener* listener){this->listener = listener;}
-    void setControlPointComponent(ControlPointComponent* component);
+    void setControlPointComponents(ControlPointComponent* component1, ControlPointComponent* component2);
     void triggerControlPointsChanged();
-    Array<juce::Point<int>> getLastPoints() const { return lastPoints; }
     
     void controlPointsChanged (Array<float> controlPoints, ControlPointComponent* component) override;
+    
+    const ControlPoints& getControlPoints1() const { return m_controlPoints1; }
+    const ControlPoints& getControlPoints2() const { return m_controlPoints2; }
+
 private:
-    void setPointsFromState(ValueTree state, ControlPoints &controlPoints);
-    void setAudioMorphPointsOnState(Array<float> audioMorphPoints, ValueTree state);
+    void setPointsFromState(const ValueTree& state, ControlPoints &controlPoints, const Identifier& pointTreeId);
     
-    // TODO: this is an awfully named variable
-    Array<juce::Point<int>> lastPoints;
+    ControlPoints m_controlPoints1;
+    ControlPoints m_controlPoints2;
     
-    // TODO: use a unique pointer instead?
-    ControlPoints lastPointsV2;
+    Listener* m_listener;
+    bool m_didSetInitialAudioState;
     
+    ControlPointComponent* m_controlPointComponent1;
+    ControlPointComponent* m_controlPointComponent2;
     
-    Listener* listener;
-    bool didSetInitialAudioState;
-    
-    // TODO: this should really not be here. It is only here to query and set the parameters
-    ControlPointComponent* controlPointComponent;
+    std::atomic<float>* m_interpolation;
 };
