@@ -12,6 +12,11 @@ public:
         }
     }
     
+    AudioProcessorValueTreeState::ParameterLayout createParameterLayout() override
+    {
+        return MorphPluginParameters::createParameterLayout();
+    }
+
     ParameterContainerComponent * createUi(SpectralAudioPlugin *plugin) override {
         return new MorphSlider(m_params, Colour::fromString(TEXT_COLOUR), 30);
     }
